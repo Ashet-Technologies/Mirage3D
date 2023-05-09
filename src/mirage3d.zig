@@ -7,7 +7,7 @@ const Mirage3D = @This();
 
 pub const BufferHandle = enum(u32) { none = 0, _ };
 pub const TextureHandle = enum(u32) { none = 0, _ };
-pub const ColorTargetHandle = enum(u32) { none = 0, screen, _ };
+pub const ColorTargetHandle = enum(u32) { none = 0, _ };
 pub const DepthTargetHandle = enum(u32) { none = 0, _ };
 pub const VertexFormatHandle = enum(u32) { none = 0, _ };
 pub const CommandQueueHandle = enum(u32) { none = 0, _ };
@@ -133,10 +133,14 @@ pub fn createColorTarget(context: *Mirage3D, texture: TextureHandle, x: u16, y: 
     @panic("not implemented yet!");
 }
 
+// TODO: Expose ways to create swap chains to actually render to the screen
+// pub fn createSwapChain(context: *Mirage3D) error{ OutOfMemory, ResourceLimit }!ColorTargetHandle {
+//     _ = context;
+//     @panic("not implemented yet!");
+// }
+
 pub fn destroyColorTarget(context: *Mirage3D, target: ColorTargetHandle) void {
-    _ = context;
-    _ = target;
-    @panic("not implemented yet!");
+    context.color_target_pool.destroy(target);
 }
 
 // Depth targets
@@ -150,9 +154,7 @@ pub fn createDepthTarget(context: *Mirage3D, w: u16, h: u16, precision: DepthTar
 }
 
 pub fn destroyDepthTarget(context: *Mirage3D, target: DepthTargetHandle) void {
-    _ = context;
-    _ = target;
-    @panic("not implemented yet!");
+    context.depth_target_pool.destroy(target);
 }
 
 // Vertex formats

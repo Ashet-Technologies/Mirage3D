@@ -6,8 +6,19 @@ const COLOR_BLACK = Mirage3D.Color{ .index = 0 };
 const COLOR_WHITE = Mirage3D.Color{ .index = 1 };
 
 pub fn main() !void {
+    const vertices = [3]Vertex{
+        Vertex{ .position = .{ .x = 0.0, .y = 0.0, .z = 0.0 }, .texcoord = .{ .x = 0.0, .y = 0.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .texcoord = .{ .x = 1.0, .y = 0.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = 1.0, .y = 1.0, .z = 0.0 }, .texcoord = .{ .x = 1.0, .y = 1.0 }, .alpha = 0xFF },
+    };
+
+    const offscreen_target_bitmap = try std.heap.c_allocator.alloc(Mirage3D.Color, 800 * 600);
+    defer std.heap.c_allocator.free(offscreen_target_bitmap);
+
     var mirage = try Mirage3D.createContext(std.heap.c_allocator);
     defer mirage.destroy();
+
+    // resource setup
 
     const vertex_format = try mirage.createVertexFormat(.{
         .element_stride = @sizeOf(Vertex),
@@ -27,35 +38,42 @@ pub fn main() !void {
     });
     defer mirage.destroyPipelineConfiguration(pipeline_setup);
 
-    const vertices = [3]Vertex{
-        Vertex{ .position = .{ .x = 0.0, .y = 0.0, .z = 0.0 }, .texcoord = .{ .x = 0.0, .y = 0.0 }, .alpha = 0xFF },
-        Vertex{ .position = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .texcoord = .{ .x = 1.0, .y = 0.0 }, .alpha = 0xFF },
-        Vertex{ .position = .{ .x = 1.0, .y = 1.0, .z = 0.0 }, .texcoord = .{ .x = 1.0, .y = 1.0 }, .alpha = 0xFF },
-    };
-
     const vertex_buffer = try mirage.createBuffer(@sizeOf(Vertex) * vertices.len);
     defer mirage.destroyBuffer(vertex_buffer);
+
+    const target_texture = try mirage.createTexture(800, 600);
+    defer mirage.destroyTexture(target_texture);
+
+    const color_target = try mirage.createColorTarget(target_texture, 0, 0, 800, 600);
+    defer mirage.destroyColorTarget(color_target);
 
     const render_queue = try mirage.createRenderQueue();
     defer mirage.destroyRenderQueue(render_queue);
 
-    try mirage.begin(render_queue);
+    // render pass:
+    {
+        try mirage.begin(render_queue);
 
-    try mirage.updateBuffer(render_queue, vertex_buffer, 0, std.mem.sliceAsBytes(&vertices));
+        try mirage.updateBuffer(render_queue, vertex_buffer, 0, std.mem.sliceAsBytes(&vertices));
 
-    try mirage.clearColorTarget(render_queue, .screen, COLOR_BLACK);
+        try mirage.clearColorTarget(render_queue, color_target, COLOR_BLACK);
 
-    try mirage.drawTriangles(.{
-        .queue = render_queue,
-        .color_target = .screen,
-        .depth_target = .none,
-        .vertex_buffer = vertex_buffer,
-        .index_buffer = .none,
-        .fill = .{ .uniform = COLOR_WHITE },
-        .transform = Mirage3D.identity_matrix,
-    });
+        try mirage.drawTriangles(.{
+            .queue = render_queue,
+            .color_target = color_target,
+            .depth_target = .none,
+            .vertex_buffer = vertex_buffer,
+            .index_buffer = .none,
+            .fill = .{ .uniform = COLOR_WHITE },
+            .transform = Mirage3D.identity_matrix,
+        });
 
-    try mirage.end(render_queue);
+        try mirage.fetchTexture(render_queue, target_texture, 0, 0, 800, 600, 800, offscreen_target_bitmap);
+
+        try mirage.end(render_queue);
+    }
+
+    // TODO: Writeout offscreen_target_bitmap data
 }
 
 const Vertex = struct {
