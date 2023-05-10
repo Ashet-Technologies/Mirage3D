@@ -90,16 +90,26 @@ pub fn destroy(context: *Mirage3D) void {
 // Texture
 
 pub fn createTexture(context: *Mirage3D, w: u16, h: u16) error{ OutOfMemory, ResourceLimit }!TextureHandle {
-    _ = context;
-    _ = h;
-    _ = w;
-    @panic("not implemented yet!");
+    const texture = try context.texture_pool.create();
+    errdefer context.texture_pool.destroy(texture.handle);
+
+    const color_buffer = try context.allocator.alloc(Color, @as(u32, w) * @as(u32, h));
+    errdefer context.allocator.free(color_buffer);
+
+    texture.object.* = Texture{
+        .width = w,
+        .height = h,
+        .allocator = context.allocator,
+        .data = color_buffer,
+    };
+
+    @memset(color_buffer, std.mem.zeroes(Color));
+
+    return texture.handle;
 }
 
 pub fn destroyTexture(context: *Mirage3D, texture: TextureHandle) void {
-    _ = context;
-    _ = texture;
-    @panic("not implemented yet!");
+    context.texture_pool.destroy(texture);
 }
 
 // Generic buffers for vertices or indices
@@ -123,14 +133,26 @@ pub fn destroyBuffer(context: *Mirage3D, buffer: BufferHandle) void {
 
 // Render to texture/render targets:
 
-pub fn createColorTarget(context: *Mirage3D, texture: TextureHandle, x: u16, y: u16, w: u16, h: u16) error{ OutOfMemory, ResourceLimit }!ColorTargetHandle {
-    _ = context;
-    _ = h;
-    _ = w;
-    _ = y;
-    _ = x;
-    _ = texture;
-    @panic("not implemented yet!");
+pub fn createColorTarget(context: *Mirage3D, texture: TextureHandle, x: u16, y: u16, w: u16, h: u16) error{ OutOfMemory, ResourceLimit, InvalidHandle, OutOfBounds }!ColorTargetHandle {
+    const tex: *Texture = try context.texture_pool.resolve(texture);
+
+    if (x > tex.width or y > tex.height)
+        return error.OutOfBounds;
+    if (@as(u32, x) + @as(u32, w) > tex.width or @as(u32, y) + @as(u32, h) > tex.height)
+        return error.OutOfBounds;
+
+    const target = try context.color_target_pool.create();
+    errdefer context.color_target_pool.destroy(target);
+
+    target.object.* = ColorTarget{
+        .texture = texture,
+        .x = x,
+        .y = y,
+        .width = w,
+        .height = h,
+    };
+
+    return target.handle;
 }
 
 // TODO: Expose ways to create swap chains to actually render to the screen
@@ -250,14 +272,21 @@ pub fn end(context: *Mirage3D, queue: CommandQueueHandle) error{ InvalidHandle, 
     q.active = false;
 }
 
-pub fn clearColorTarget(context: *Mirage3D, queue: CommandQueueHandle, target: ColorTargetHandle, color: Color) error{ OutOfMemory, InactiveQueue, InvalidHandle }!void {
+pub fn clearColorTarget(context: *Mirage3D, queue: CommandQueueHandle, target: ColorTargetHandle, color: Color) error{ OutOfMemory, InactiveQueue, InvalidHandle, TextureKilled }!void {
     const q = try context.command_queue_pool.resolve(queue);
     if (!q.active) return error.InactiveQueue;
 
-    _ = color;
-    _ = target;
+    const view = context.colorTargetToView(target) catch |err| switch (err) {
+        error.TextureKilled, error.InvalidHandle => |e| return e,
+        error.OutOfBounds => unreachable, // cannot be reached, sizes are immutable
+    };
 
-    @panic("not implemented yet!");
+    var row = view.base;
+    var y: usize = 0;
+    while (y < view.height) : (y += 1) {
+        @memset(row[0..view.width], color);
+        row += view.stride;
+    }
 }
 
 pub fn clearDepthTarget(context: *Mirage3D, queue: CommandQueueHandle, target: DepthTargetHandle, depth: f32) error{ OutOfMemory, InvalidHandle, InactiveQueue }!void {
@@ -305,14 +334,19 @@ pub fn fetchTexture(context: *Mirage3D, queue: CommandQueueHandle, texture: Text
     const q = try context.command_queue_pool.resolve(queue);
     if (!q.active) return error.InactiveQueue;
 
-    _ = data;
-    _ = stride;
-    _ = h;
-    _ = w;
-    _ = y;
-    _ = x;
-    _ = texture;
-    @panic("not implemented yet!");
+    const tex: *Texture = try context.texture_pool.resolve(texture);
+
+    const view = try TextureView.create(tex, x, y, w, h);
+
+    var src_row = view.base;
+    var dst_row = data.ptr;
+
+    var py: usize = 0;
+    while (py < view.height) : (py += 1) {
+        @memcpy(dst_row[0..view.width], src_row[0..view.width]);
+        src_row += view.stride;
+        dst_row += stride;
+    }
 }
 
 pub const FillMode = union(enum) {
@@ -341,7 +375,13 @@ pub fn drawTriangles(context: *Mirage3D, drawInfo: DrawInfo) error{ OutOfMemory,
 }
 
 const Texture = struct {
+    width: u16,
+    height: u16,
+    data: []Color,
+    allocator: std.mem.Allocator,
+
     fn deinit(obj: *Texture) void {
+        obj.allocator.free(obj.data);
         obj.* = undefined;
     }
 };
@@ -424,6 +464,47 @@ const PipelineConfiguration = struct {
         obj.* = undefined;
     }
 };
+
+const TextureView = struct {
+    base: [*]Color,
+    stride: usize,
+    width: usize,
+    height: usize,
+
+    pub fn create(tex: *Texture, x: u16, y: u16, width: u16, height: u16) error{OutOfBounds}!TextureView {
+        if (@as(usize, x) +| width > tex.width) return error.OutOfBounds;
+        if (@as(usize, y) +| height > tex.height) return error.OutOfBounds;
+
+        const stride = @as(usize, tex.width);
+        const base = tex.data.ptr + y * stride + x;
+
+        return TextureView{
+            .base = base,
+            .stride = stride,
+            .width = width,
+            .height = height,
+        };
+    }
+};
+
+fn colorTargetToView(context: *Mirage3D, target_handle: ColorTargetHandle) error{ InvalidHandle, OutOfBounds, TextureKilled }!TextureView {
+    const dst: *ColorTarget = try context.color_target_pool.resolve(target_handle);
+
+    const tex: *Texture = context.texture_pool.resolve(dst.texture) catch return error.TextureKilled;
+
+    std.debug.assert(dst.x + dst.width <= tex.width);
+    std.debug.assert(dst.y + dst.height <= tex.height);
+
+    const stride = @as(usize, tex.width);
+    const base = tex.data.ptr + dst.y * stride + dst.x;
+
+    return TextureView{
+        .base = base,
+        .stride = stride,
+        .width = dst.width,
+        .height = dst.height,
+    };
+}
 
 /// A pool that can allocate objects and connect them to a handle type
 fn ObjectPool(comptime Handle: type, comptime Object: type) type {
