@@ -31,7 +31,7 @@ pub const identity_matrix: Matrix4 = .{
 
 pub const DepthTargetPrecision = enum { @"16 bit", @"32 bit" };
 pub const IndexFormat = enum { none, u8, u16, u32 };
-pub const PrimitiveType = enum { triangles, triangle_strip, triangle_loop };
+pub const PrimitiveType = enum { triangles, triangle_strip, triangle_fan };
 pub const BlendMode = enum { @"opaque", alpha_threshold, alpha_to_coverage }; // alpha_blending, additive
 pub const DepthMode = enum { normal, test_only, ignore_depth };
 pub const TextureWrapMode = enum { wrap, clamp };
@@ -119,10 +119,9 @@ pub fn createBuffer(context: *Mirage3D, size: usize) error{ OutOfMemory, Resourc
     errdefer context.buffer_pool.destroy(fmt.handle);
 
     fmt.object.* = Buffer{
-        .data = std.ArrayList(u8).init(context.allocator),
+        .allocator = context.allocator,
+        .data = try context.allocator.allocWithOptions(u8, size, 16, null),
     };
-
-    try fmt.object.data.resize(size);
 
     return fmt.handle;
 }
@@ -214,7 +213,6 @@ pub fn destroyVertexFormat(context: *Mirage3D, format: VertexFormatHandle) void 
 // pipeline configs
 
 pub const PipelineDescription = struct {
-    primitive_type: PrimitiveType, //
     blend_mode: BlendMode, // determines how the vertices are blended over the destination
     depth_mode: DepthMode, // determines how to handle depth. will be ignored if no depth target is present.
     vertex_format: VertexFormatHandle, // defines how to interpret `vertex_buffer`
@@ -227,7 +225,6 @@ pub fn createPipelineConfiguration(context: *Mirage3D, desc: PipelineDescription
     errdefer context.pipeline_configuration_pool.destroy(cfg.handle);
 
     cfg.object.* = PipelineConfiguration{
-        .primitive_type = desc.primitive_type,
         .blend_mode = desc.blend_mode,
         .depth_mode = desc.depth_mode,
         .vertex_format = desc.vertex_format,
@@ -278,7 +275,6 @@ pub fn clearColorTarget(context: *Mirage3D, queue: CommandQueueHandle, target: C
 
     const view = context.colorTargetToView(target) catch |err| switch (err) {
         error.TextureKilled, error.InvalidHandle => |e| return e,
-        error.OutOfBounds => unreachable, // cannot be reached, sizes are immutable
     };
 
     var row = view.base;
@@ -306,7 +302,7 @@ pub fn updateBuffer(context: *Mirage3D, queue: CommandQueueHandle, buffer: Buffe
 
     const buf = try context.buffer_pool.resolve(buffer);
 
-    const storage = buf.data.items;
+    const storage = buf.data;
 
     if (offset > storage.len)
         return error.OutOfRange;
@@ -350,6 +346,7 @@ pub fn fetchTexture(context: *Mirage3D, queue: CommandQueueHandle, texture: Text
 }
 
 pub const FillMode = union(enum) {
+    none,
     wireframe: Color,
     uniform: Color,
     textured: TextureHandle,
@@ -359,19 +356,254 @@ pub const FillMode = union(enum) {
 pub const DrawInfo = struct {
     queue: CommandQueueHandle, //
 
+    configuration: PipelineConfigurationHandle,
+
     color_target: ColorTargetHandle, // if != none, will paint triangles into this color target
     depth_target: DepthTargetHandle, // if != none, we can use depth testing with potential writeback
 
     vertex_buffer: BufferHandle, // the source of vertex data
     index_buffer: BufferHandle, // if index_format is not none, this buffer will be used to fetch data for indices
-    fill: FillMode,
-    transform: Matrix4, // transform the vertices before rendering
+
+    front_fill: FillMode, // how is the front side of the triangles filled?
+    back_fill: FillMode, // how is the back side of the triangles filled?
+    transform: Matrix4, // transforms the vertices before rendering
+    primitive_type: PrimitiveType, // determines how primitives are assembled from indices
 };
 
-pub fn drawTriangles(context: *Mirage3D, drawInfo: DrawInfo) error{ OutOfMemory, InvalidConfiguration }!void {
-    _ = context;
-    _ = drawInfo;
-    @panic("not implemented yet!");
+pub fn drawTriangles(context: *Mirage3D, drawInfo: DrawInfo) error{ OutOfMemory, InactiveQueue, InvalidHandle, InvalidConfiguration, VertexFormatKilled, TextureKilled, TargetDimensionMismatch }!void {
+    const q = try context.command_queue_pool.resolve(drawInfo.queue);
+    if (!q.active) return error.InactiveQueue;
+
+    const cfg: *PipelineConfiguration = try context.pipeline_configuration_pool.resolve(drawInfo.configuration);
+
+    const vertex_format: *VertexFormat = context.vertex_format_pool.resolve(cfg.vertex_format) catch return error.VertexFormatKilled;
+
+    const color_target: ?TextureView = if (drawInfo.color_target != .none)
+        try context.colorTargetToView(drawInfo.color_target)
+    else
+        null;
+
+    const depth_target: ?*DepthTarget = if (drawInfo.depth_target != .none)
+        try context.depth_target_pool.resolve(drawInfo.depth_target)
+    else
+        null;
+
+    const vertex_buffer: *Buffer = try context.buffer_pool.resolve(drawInfo.vertex_buffer);
+
+    const index_buffer: ?*Buffer = if (cfg.index_format == .none)
+        if (drawInfo.index_buffer != .none)
+            return error.InvalidConfiguration
+        else
+            null
+    else
+        try context.buffer_pool.resolve(drawInfo.index_buffer);
+
+    const front_fill_mode: FillModeUnwrapped = switch (drawInfo.front_fill) {
+        .none => .none,
+        .wireframe => |val| .{ .wireframe = val },
+        .uniform => |val| .{ .uniform = val },
+        .textured => |val| .{ .textured = try context.texture_pool.resolve(val) },
+        .colored => |val| .{ .colored = try context.buffer_pool.resolve(val) },
+    };
+
+    const back_fill_mode: FillModeUnwrapped = switch (drawInfo.back_fill) {
+        .none => .none,
+        .wireframe => |val| .{ .wireframe = val },
+        .uniform => |val| .{ .uniform = val },
+        .textured => |val| .{ .textured = try context.texture_pool.resolve(val) },
+        .colored => |val| .{ .colored = try context.buffer_pool.resolve(val) },
+    };
+
+    if (color_target != null and depth_target != null) {
+        if (color_target.?.width != depth_target.?.width or color_target.?.height != depth_target.?.height)
+            return error.TargetDimensionMismatch;
+    }
+
+    // this is a pretty efficient rasterization:
+    if (color_target == null and depth_target == null)
+        return;
+
+    var vertex_fetcher = VertexFetcher.init(vertex_format, vertex_buffer);
+    var index_fetcher = IndexFetcher.init(vertex_format, cfg.index_format, vertex_buffer, index_buffer);
+
+    var vertex_transform = VertexTransform.init(&vertex_fetcher, drawInfo.transform);
+
+    var primitive_assembly = PrimitiveAssembly.init(&vertex_transform, &index_fetcher, drawInfo.primitive_type);
+
+    var face_index: usize = 0;
+    while (primitive_assembly.assemble()) |face| {
+        const p0 = linearizePos(face[0].position);
+        const p1 = linearizePos(face[1].position);
+        const p2 = linearizePos(face[2].position);
+
+        // std.log.info("({d:.1},{d:.1},{d:.1}), ({d:.1},{d:.1},{d:.1}), ({d:.1},{d:.1},{d:.1})", .{
+        //     p0[0], p0[1], p0[2],
+        //     p1[0], p1[1], p1[2],
+        //     p2[0], p2[1], p2[2],
+        // });
+
+        const v0 = mapToScreen(p0, color_target.?.width, color_target.?.height);
+        const v1 = mapToScreen(p1, color_target.?.width, color_target.?.height);
+        const v2 = mapToScreen(p2, color_target.?.width, color_target.?.height);
+
+        const signed_barycentric_area = orient2d(f32, v0, v1, v2);
+
+        const fill_mode = if (signed_barycentric_area <= 0.0)
+            front_fill_mode
+        else
+            back_fill_mode;
+
+        switch (fill_mode) {
+            .none => {},
+            .wireframe => |color| {
+                renderWire(color_target.?, v0, v1, WireFill{ .color = color });
+                renderWire(color_target.?, v1, v2, WireFill{ .color = color });
+                renderWire(color_target.?, v2, v0, WireFill{ .color = color });
+            },
+            .uniform => |color| renderTriangleGeneric(color_target.?, v0, v1, v2, FlatFill{ .color = color }),
+            .colored => |buffer| renderTriangleGeneric(color_target.?, v0, v1, v2, FlatFill{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] }),
+            .textured => @panic("textured rendering not supported yet"),
+        }
+
+        face_index += 1;
+    }
+}
+
+const FlatFill = struct {
+    color: Color,
+    inline fn perform(ff: @This(), color: *Color, x: usize, y: usize, w0: f32, w1: f32, w2: f32) void {
+        _ = w0;
+        _ = w1;
+        _ = w2;
+        _ = x;
+        _ = y;
+        color.* = ff.color;
+    }
+};
+
+const WireFill = struct {
+    color: Color,
+    inline fn perform(wf: @This(), color: *Color, x: usize, y: usize) void {
+        _ = x;
+        _ = y;
+        color.* = wf.color;
+    }
+};
+
+fn linearizePos(p: [4]f32) [3]f32 {
+    return .{
+        p[0] / p[3],
+        p[1] / p[3],
+        p[2] / p[3],
+    };
+}
+
+fn mapToScreen(xyz: [3]f32, width: usize, height: usize) Point(f32) {
+    return Point(f32){
+        .x = @intToFloat(f32, width -| 1) * (0.5 + 0.5 * xyz[0]),
+        .y = @intToFloat(f32, height -| 1) * (0.5 - 0.5 * xyz[1]),
+    };
+}
+
+fn renderWire(view: TextureView, v0: Point(f32), v1: Point(f32), render_access: anytype) void {
+    const x0 = @floatToInt(i32, v0.x + 0.5);
+    const x1 = @floatToInt(i32, v1.x + 0.5);
+
+    const y0 = @floatToInt(i32, v0.y + 0.5);
+    const y1 = @floatToInt(i32, v1.y + 0.5);
+
+    const dx = @intCast(i32, if (x1 > x0) x1 - x0 else x0 - x1);
+    const dy = -@intCast(i32, if (y1 > y0) y1 - y0 else y0 - y1);
+
+    const sx = if (x0 < x1) @as(i32, 1) else @as(i32, -1);
+    const sy = if (y0 < y1) @as(i32, 1) else @as(i32, -1);
+
+    var err = dx + dy;
+
+    var x = x0;
+    var y = y0;
+
+    while (true) {
+        if (x >= 0 and x < view.width and y >= 0 and y < view.height) {
+            const ux = @intCast(usize, x);
+            const uy = @intCast(usize, y);
+            render_access.perform(&view.base[uy * view.stride + ux], ux, uy);
+        }
+
+        // std.log.info("({} {}) => {} delta=({} {}) dir=({} {})", .{ x, y, err, dx, dy, sx, sy });
+
+        if (x == x1 and y == y1) {
+            break;
+        }
+
+        const e2 = 2 * err;
+        if (e2 > dy) { // e_xy+e_x > 0
+            err += dy;
+            x += sx;
+        }
+        if (e2 < dx) { // e_xy+e_y < 0
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+fn renderTriangleGeneric(view: TextureView, v0: Point(f32), v1: Point(f32), v2: Point(f32), render_access: anytype) void {
+
+    // Compute triangle bounding box
+    const minX = @floor(@max(@as(f32, 0), @min(@min(v0.x, v1.x), v2.x)));
+    const minY = @floor(@max(@as(f32, 0), @min(@min(v0.y, v1.y), v2.y)));
+    const maxX = @ceil(@min(@intToFloat(f32, view.width - 1), @max(@max(v0.x, v1.x), v2.x)));
+    const maxY = @ceil(@min(@intToFloat(f32, view.height - 1), @max(@max(v0.y, v1.y), v2.y)));
+
+    // std.log.info("bounding box: {d:.2} => {d:.2}; {d:.2} => {d:.2}", .{
+    //     minX, maxX,
+    //     minY, maxY,
+    // });
+
+    if (minX > maxX) return;
+    if (minY > maxY) return;
+
+    var x0: usize = @floatToInt(usize, minX);
+    var x1: usize = @floatToInt(usize, maxX);
+
+    var y0: usize = @floatToInt(usize, minY);
+    var y1: usize = @floatToInt(usize, maxY);
+
+    var row = view.base + view.stride * y0;
+    for (y0..y1 + 1) |y| {
+        for (x0..x1 + 1) |x| {
+            const p = Point(f32){
+                .x = @intToFloat(f32, x),
+                .y = @intToFloat(f32, y),
+            };
+
+            // Determine barycentric coordinates
+            const w0 = orient2d(f32, v1, v2, p);
+            const w1 = orient2d(f32, v2, v0, p);
+            const w2 = orient2d(f32, v0, v1, p);
+
+            // std.log.info("{} {} => {d:.2} {d:.2} {d:.2}", .{ x, y, w0, w1, w2 });
+
+            // If p is on or inside all edges, render pixel.
+            if (w0 <= 0 and w1 <= 0 and w2 <= 0) {
+                render_access.perform(&row[x], x, y, w0, w1, w2);
+            }
+        }
+
+        row += view.stride;
+    }
+}
+
+fn Point(comptime T: type) type {
+    return struct {
+        x: T,
+        y: T,
+    };
+}
+
+fn orient2d(comptime T: type, a: Point(T), b: Point(T), c: Point(T)) T {
+    return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
 const Texture = struct {
@@ -387,10 +619,11 @@ const Texture = struct {
 };
 
 const Buffer = struct {
-    data: std.ArrayList(u8),
+    data: []align(16) u8,
+    allocator: std.mem.Allocator,
 
     fn deinit(obj: *Buffer) void {
-        obj.data.deinit();
+        obj.allocator.free(obj.data);
         obj.* = undefined;
     }
 };
@@ -453,7 +686,6 @@ const CommandQueue = struct {
 };
 
 const PipelineConfiguration = struct {
-    primitive_type: PrimitiveType, //
     blend_mode: BlendMode, // determines how the vertices are blended over the destination
     depth_mode: DepthMode, // determines how to handle depth. will be ignored if no depth target is present.
     vertex_format: VertexFormatHandle, // defines how to interpret `vertex_buffer`
@@ -487,7 +719,7 @@ const TextureView = struct {
     }
 };
 
-fn colorTargetToView(context: *Mirage3D, target_handle: ColorTargetHandle) error{ InvalidHandle, OutOfBounds, TextureKilled }!TextureView {
+fn colorTargetToView(context: *Mirage3D, target_handle: ColorTargetHandle) error{ InvalidHandle, TextureKilled }!TextureView {
     const dst: *ColorTarget = try context.color_target_pool.resolve(target_handle);
 
     const tex: *Texture = context.texture_pool.resolve(dst.texture) catch return error.TextureKilled;
@@ -677,6 +909,215 @@ test mixIntRanged {
     try std.testing.expectEqual(@as(u8, 127), mixIntRanged(u8, 255, 128));
     try std.testing.expectEqual(@as(u8, 127), mixIntRanged(u8, 128, 255));
 }
+
+const FillModeUnwrapped = union(enum) {
+    none,
+    wireframe: Color,
+    uniform: Color,
+    textured: *Texture,
+    colored: *Buffer,
+};
+
+const Vertex = struct {
+    position: [4]f32, // homegeneous coordinate
+    uv: [2]f16,
+    alpha: u8,
+};
+
+/// Decodes the vertex buffer and returns vertices based on an index.
+const VertexFetcher = struct {
+    stream: []align(16) const u8,
+    format: *VertexFormat,
+
+    fn init(format: *VertexFormat, buffer: *Buffer) VertexFetcher {
+        return VertexFetcher{
+            .stream = buffer.data,
+            .format = format,
+        };
+    }
+
+    fn fetch(fetcher: VertexFetcher, index: usize) Vertex {
+        const fmt = fetcher.format;
+        const vertex = fetcher.stream[fmt.element_stride * index ..][0..fmt.element_stride];
+
+        const alpha = if (fmt.feature_mask.alpha)
+            vertex[fmt.alpha_offset]
+        else
+            0xFF;
+
+        const uv = if (fmt.feature_mask.texcoord)
+            @bitCast([2]f16, vertex[fmt.texture_coord_offset..][0 .. 2 * @sizeOf(f16)].*)
+        else
+            [2]f16{ 0, 0 };
+
+        const pos = @bitCast([3]f32, vertex[fmt.position_offset..][0 .. 3 * @sizeOf(f32)].*);
+
+        return Vertex{
+            .position = pos ++ [1]f32{1},
+            .uv = uv,
+            .alpha = alpha,
+        };
+    }
+};
+
+/// Fetches indices based on the index format.
+const IndexFetcher = struct {
+    index_buffer: ?[]align(16) u8,
+    vertex_count: usize,
+    pos: usize = 0,
+    fetch_func: *const fn (*IndexFetcher) ?usize,
+
+    pub fn init(vertex_format: *const VertexFormat, index_format: IndexFormat, vertex_buffer: *Buffer, index_buffer: ?*Buffer) IndexFetcher {
+        return IndexFetcher{
+            .index_buffer = if (index_buffer) |buf| buf.data else &.{},
+            .vertex_count = vertex_buffer.data.len / vertex_format.element_stride,
+            .fetch_func = switch (index_format) {
+                .none => fetchVertexArray,
+                .u8 => fetchVertexIndex8,
+                .u16 => fetchVertexIndex16,
+                .u32 => fetchVertexIndex32,
+            },
+        };
+    }
+
+    pub fn fetch(idx: *IndexFetcher) ?usize {
+        return idx.fetch_func(idx);
+    }
+
+    fn fetchVertexArray(idx: *IndexFetcher) ?usize {
+        if (idx.pos >= idx.vertex_count)
+            return null;
+        const i = idx.pos;
+        idx.pos += 1;
+        return i;
+    }
+
+    fn fetchVertexIndexGen(idx: *IndexFetcher, comptime T: type) ?usize {
+        const slice = std.mem.bytesAsSlice(T, idx.index_buffer.?);
+        if (idx.pos >= slice.len)
+            return null;
+        const i = slice[idx.pos];
+        idx.pos += 1;
+        return i;
+    }
+
+    fn fetchVertexIndex8(idx: *IndexFetcher) ?usize {
+        return idx.fetchVertexIndexGen(u8);
+    }
+    fn fetchVertexIndex16(idx: *IndexFetcher) ?usize {
+        return idx.fetchVertexIndexGen(u16);
+    }
+    fn fetchVertexIndex32(idx: *IndexFetcher) ?usize {
+        return idx.fetchVertexIndexGen(u32);
+    }
+};
+
+const VertexTransform = struct {
+    const cache_size = 32; // maybe adjust for platform
+
+    fetcher: *const VertexFetcher,
+    matrix: Matrix4,
+    cache_key: [cache_size]usize = .{std.math.maxInt(usize)} ** cache_size,
+    cache_value: [cache_size]Vertex = undefined,
+
+    pub fn init(fetcher: *const VertexFetcher, matrix: Matrix4) VertexTransform {
+        return VertexTransform{
+            .fetcher = fetcher,
+            .matrix = matrix,
+        };
+    }
+
+    pub fn getVertex(transform: *VertexTransform, index: usize) Vertex {
+        var vertex = transform.fetcher.fetch(index);
+        vertex.position = mulMatrixVec(transform.matrix, vertex.position);
+        transform.cache_key[cacheIndex(index)] = index;
+        transform.cache_value[cacheIndex(index)] = vertex;
+        return vertex;
+    }
+
+    fn cacheIndex(index: usize) usize {
+        return index % cache_size;
+    }
+
+    fn mulMatrixVec(mat: Matrix4, vec: [4]f32) [4]f32 {
+        var result = comptime std.mem.zeroes([4]f32);
+        inline for (0..4) |i| {
+            result[0] += vec[i] * mat[i][0];
+            result[1] += vec[i] * mat[i][1];
+            result[2] += vec[i] * mat[i][2];
+            result[3] += vec[i] * mat[i][3];
+        }
+        return result;
+    }
+};
+
+const PrimitiveAssembly = struct {
+    vertices: *VertexTransform,
+    indices: *IndexFetcher,
+    fetch_tris: *const fn (as: *PrimitiveAssembly) ?[3]usize,
+    index_cache: [2]usize = undefined,
+    was_init: bool = false,
+
+    pub fn init(vertices: *VertexTransform, indices: *IndexFetcher, primitive_type: PrimitiveType) PrimitiveAssembly {
+        return PrimitiveAssembly{
+            .vertices = vertices,
+            .indices = indices,
+            .fetch_tris = switch (primitive_type) {
+                .triangles => assembleTriangles,
+                .triangle_strip => assembleTriangleStrip,
+                .triangle_fan => assembleTriangleFan,
+            },
+        };
+    }
+
+    pub fn assemble(as: *PrimitiveAssembly) ?[3]Vertex {
+        const indices = as.fetch_tris(as) orelse return null;
+        return .{
+            as.vertices.getVertex(indices[0]),
+            as.vertices.getVertex(indices[1]),
+            as.vertices.getVertex(indices[2]),
+        };
+    }
+
+    fn assembleTriangles(as: *PrimitiveAssembly) ?[3]usize {
+        const index0 = as.indices.fetch() orelse return null;
+        const index1 = as.indices.fetch() orelse return null;
+        const index2 = as.indices.fetch() orelse return null;
+        return .{ index0, index1, index2 };
+    }
+
+    fn assembleTriangleStrip(as: *PrimitiveAssembly) ?[3]usize {
+        if (!as.was_init) {
+            as.index_cache[0] = as.indices.fetch() orelse return null;
+            as.index_cache[1] = as.indices.fetch() orelse return null;
+            as.was_init = true;
+        }
+
+        const index0 = as.index_cache[0];
+        const index1 = as.index_cache[1];
+        const index2 = as.indices.fetch() orelse return null;
+
+        as.index_cache = .{ index1, index2 };
+
+        return .{ index0, index1, index2 };
+    }
+
+    fn assembleTriangleFan(as: *PrimitiveAssembly) ?[3]usize {
+        if (!as.was_init) {
+            as.index_cache[0] = as.indices.fetch() orelse return null;
+            as.index_cache[1] = as.indices.fetch() orelse return null;
+            as.was_init = true;
+        }
+
+        const index0 = as.index_cache[0];
+        const index1 = as.index_cache[1];
+        const index2 = as.indices.fetch() orelse return null;
+
+        as.index_cache[1] = index2;
+
+        return .{ index0, index1, index2 };
+    }
+};
 
 /// Contains a 16x16 bayer dithering matrix, having unique values from 0 to 255.
 const bayer16x16: [16][16]u8 = @bitCast([16][16]u8, [256]u8{

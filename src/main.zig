@@ -6,14 +6,14 @@ const COLOR_BLACK = Mirage3D.Color{ .index = 0 };
 const COLOR_GRAY = Mirage3D.Color{ .index = 128 };
 const COLOR_WHITE = Mirage3D.Color{ .index = 255 };
 
-const TARGET_WIDTH = 800;
-const TARGET_HEIGHT = 600;
+const TARGET_WIDTH = 80;
+const TARGET_HEIGHT = 60;
 
 pub fn main() !void {
     const vertices = [3]Vertex{
         Vertex{ .position = .{ .x = 0.0, .y = 0.0, .z = 0.0 }, .texcoord = .{ .x = 0.0, .y = 0.0 }, .alpha = 0xFF },
-        Vertex{ .position = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .texcoord = .{ .x = 1.0, .y = 0.0 }, .alpha = 0xFF },
         Vertex{ .position = .{ .x = 1.0, .y = 1.0, .z = 0.0 }, .texcoord = .{ .x = 1.0, .y = 1.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .texcoord = .{ .x = 1.0, .y = 0.0 }, .alpha = 0xFF },
     };
 
     const offscreen_target_bitmap = try std.heap.c_allocator.alloc(Mirage3D.Color, TARGET_WIDTH * TARGET_HEIGHT);
@@ -33,7 +33,6 @@ pub fn main() !void {
     defer mirage.destroyVertexFormat(vertex_format);
 
     const pipeline_setup = try mirage.createPipelineConfiguration(.{
-        .primitive_type = .triangles,
         .blend_mode = .@"opaque",
         .depth_mode = .normal,
         .vertex_format = vertex_format,
@@ -62,15 +61,22 @@ pub fn main() !void {
 
         try mirage.clearColorTarget(render_queue, color_target, COLOR_BLACK);
 
-        // try mirage.drawTriangles(.{
-        //     .queue = render_queue,
-        //     .color_target = color_target,
-        //     .depth_target = .none,
-        //     .vertex_buffer = vertex_buffer,
-        //     .index_buffer = .none,
-        //     .fill = .{ .uniform = COLOR_WHITE },
-        //     .transform = Mirage3D.identity_matrix,
-        // });
+        try mirage.drawTriangles(.{
+            .queue = render_queue,
+
+            .configuration = pipeline_setup,
+
+            .color_target = color_target,
+            .depth_target = .none,
+
+            .vertex_buffer = vertex_buffer,
+            .index_buffer = .none,
+
+            .primitive_type = .triangles,
+            .front_fill = .{ .uniform = COLOR_WHITE },
+            .back_fill = .{ .wireframe = COLOR_GRAY },
+            .transform = Mirage3D.identity_matrix,
+        });
 
         try mirage.fetchTexture(render_queue, target_texture, 0, 0, TARGET_WIDTH, TARGET_HEIGHT, TARGET_WIDTH, offscreen_target_bitmap);
 
