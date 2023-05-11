@@ -1,15 +1,18 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
+    const proxy_head = b.dependency("proxy_head", .{});
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
         .name = "Mirage3D",
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = "src/demo.zig" },
         .target = target,
         .optimize = optimize,
     });
+    exe.addModule("ProxyHead", proxy_head.module("ProxyHead"));
     exe.linkLibC();
     b.installArtifact(exe);
 

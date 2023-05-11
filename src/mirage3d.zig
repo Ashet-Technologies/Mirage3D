@@ -446,35 +446,119 @@ pub fn drawTriangles(context: *Mirage3D, drawInfo: DrawInfo) error{ OutOfMemory,
         const v1 = mapToScreen(p1, color_target.?.width, color_target.?.height);
         const v2 = mapToScreen(p2, color_target.?.width, color_target.?.height);
 
-        const signed_barycentric_area = orient2d(f32, v0, v1, v2);
+        const winding_order = orient2d(f32, v0, v1, v2);
 
-        const fill_mode = if (signed_barycentric_area <= 0.0)
+        std.log.info("{d}", .{winding_order});
+
+        const fill_mode = if (winding_order <= 0.0)
             front_fill_mode
         else
             back_fill_mode;
 
-        switch (fill_mode) {
-            .none => {},
-            .wireframe => |color| {
-                renderWire(color_target.?, v0, v1, WireFill{ .color = color });
-                renderWire(color_target.?, v1, v2, WireFill{ .color = color });
-                renderWire(color_target.?, v2, v0, WireFill{ .color = color });
+        switch (cfg.blend_mode) {
+            .@"opaque" => switch (fill_mode) {
+                .none => {},
+                .wireframe => |color| renderWireframeGeneric(color_target.?, v0, v1, v2, WireFill{ .color = color }),
+                .uniform => |color| renderTriangleGeneric(color_target.?, v0, v1, v2, FlatFill{ .color = color }),
+                .colored => |buffer| renderTriangleGeneric(color_target.?, v0, v1, v2, FlatFill{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] }),
+                .textured => @panic("textured rendering not supported yet"),
             },
-            .uniform => |color| renderTriangleGeneric(color_target.?, v0, v1, v2, FlatFill{ .color = color }),
-            .colored => |buffer| renderTriangleGeneric(color_target.?, v0, v1, v2, FlatFill{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] }),
-            .textured => @panic("textured rendering not supported yet"),
+            .alpha_threshold => switch (fill_mode) {
+                .none => {},
+                .wireframe => |color| renderWireframeGeneric(color_target.?, v0, v1, v2, WireFill{ .color = color }),
+                .uniform => |color| renderTriangleGeneric(color_target.?, v0, v1, v2, AlphaWrapper(FlatFill, .threshold){
+                    .barycentric_area = winding_order,
+                    .vertices = &face,
+                    .wrapped = .{ .color = color },
+                }),
+                .colored => |buffer| renderTriangleGeneric(color_target.?, v0, v1, v2, AlphaWrapper(FlatFill, .threshold){
+                    .barycentric_area = winding_order,
+                    .vertices = &face,
+                    .wrapped = .{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] },
+                }),
+                .textured => @panic("textured rendering not supported yet"),
+            },
+            .alpha_to_coverage => switch (fill_mode) {
+                .none => {},
+                .wireframe => |color| renderWireframeGeneric(color_target.?, v0, v1, v2, WireFill{ .color = color }),
+                .uniform => |color| renderTriangleGeneric(color_target.?, v0, v1, v2, AlphaWrapper(FlatFill, .dither){
+                    .barycentric_area = winding_order,
+                    .vertices = &face,
+                    .wrapped = .{ .color = color },
+                }),
+                .colored => |buffer| renderTriangleGeneric(color_target.?, v0, v1, v2, AlphaWrapper(FlatFill, .dither){
+                    .barycentric_area = winding_order,
+                    .vertices = &face,
+                    .wrapped = .{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] },
+                }),
+                .textured => @panic("textured rendering not supported yet"),
+            },
         }
 
         face_index += 1;
     }
 }
 
+const AlphaMode = enum { threshold, dither };
+fn AlphaWrapper(comptime Filler: type, comptime mode: AlphaMode) type {
+    return struct {
+        barycentric_area: f32,
+        vertices: *const [3]Vertex,
+        wrapped: Filler,
+
+        inline fn perform(ff: @This(), color: *Color, x: usize, y: usize, w: [3]f32) void {
+            const a0 = ff.vertices[0].alpha;
+            const a1 = ff.vertices[1].alpha;
+            const a2 = ff.vertices[2].alpha;
+
+            const alpha = barycentricInterpolation(f32, u8, ff.barycentric_area, w, .{ a0, a1, a2 });
+
+            switch (mode) {
+                .threshold => if (alpha < 0x80)
+                    return,
+                .dither => if (alpha == 0 or alpha < bayer16x16[x % 16][y % 16])
+                    return,
+            }
+            // color.* = .{ .index = alpha };
+
+            ff.wrapped.perform(color, x, y, w);
+        }
+    };
+}
+
+fn barycentricInterpolation(
+    comptime T: type,
+    comptime V: type,
+    total: T,
+    // coordinates
+    w: [3]T,
+
+    // values
+    v: [3]V,
+) V {
+    const H = struct {
+        fn vToFloat(val: V) f32 {
+            return @intToFloat(f32, val);
+        }
+        fn tToFloat(t: T) f32 {
+            return @floatCast(f32, t);
+        }
+        fn floatToV(f: f32) V {
+            return @floatToInt(V, std.math.clamp(f, std.math.minInt(V), std.math.maxInt(V)));
+        }
+    };
+
+    var result: f32 = 0;
+    inline for (w, v) |wx, vx| {
+        result += H.vToFloat(vx) * (H.tToFloat(wx) / H.tToFloat(total));
+    }
+    return H.floatToV(result);
+}
+
 const FlatFill = struct {
     color: Color,
-    inline fn perform(ff: @This(), color: *Color, x: usize, y: usize, w0: f32, w1: f32, w2: f32) void {
-        _ = w0;
-        _ = w1;
-        _ = w2;
+    inline fn perform(ff: @This(), color: *Color, x: usize, y: usize, w: [3]f32) void {
+        _ = w;
         _ = x;
         _ = y;
         color.* = ff.color;
@@ -503,6 +587,12 @@ fn mapToScreen(xyz: [3]f32, width: usize, height: usize) Point(f32) {
         .x = @intToFloat(f32, width -| 1) * (0.5 + 0.5 * xyz[0]),
         .y = @intToFloat(f32, height -| 1) * (0.5 - 0.5 * xyz[1]),
     };
+}
+
+fn renderWireframeGeneric(view: TextureView, v0: Point(f32), v1: Point(f32), v2: Point(f32), render_access: anytype) void {
+    renderWire(view, v0, v1, render_access);
+    renderWire(view, v1, v2, render_access);
+    renderWire(view, v2, v0, render_access);
 }
 
 fn renderWire(view: TextureView, v0: Point(f32), v1: Point(f32), render_access: anytype) void {
@@ -587,7 +677,7 @@ fn renderTriangleGeneric(view: TextureView, v0: Point(f32), v1: Point(f32), v2: 
 
             // If p is on or inside all edges, render pixel.
             if (w0 <= 0 and w1 <= 0 and w2 <= 0) {
-                render_access.perform(&row[x], x, y, w0, w1, w2);
+                render_access.perform(&row[x], x, y, .{ w0, w1, w2 });
             }
         }
 
@@ -604,6 +694,14 @@ fn Point(comptime T: type) type {
 
 fn orient2d(comptime T: type, a: Point(T), b: Point(T), c: Point(T)) T {
     return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+fn crossProduct(a: [3]f32, b: [3]f32) [3]f32 {
+    return [3]f32{
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    };
 }
 
 const Texture = struct {
