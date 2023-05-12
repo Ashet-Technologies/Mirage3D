@@ -481,53 +481,61 @@ pub fn drawTriangles(context: *Mirage3D, drawInfo: DrawInfo) error{ OutOfMemory,
 
     var primitive_assembly = PrimitiveAssembly.init(&vertex_transform, &index_fetcher, drawInfo.primitive_type);
 
-    var face_index: usize = 0;
-    while (primitive_assembly.assemble()) |face_raw| {
-        var face = face_raw;
+    // inline both depth_mode and blend_mode into the
+    // render loop so we don't have any runtime branching
+    // on those while looping.
+    //
+    // fill_mode must be switched at runtime inside the loop as it is decided *per*
+    // triangle.
+    switch (cfg.depth_mode) {
+        inline else => |depth_mode| switch (cfg.blend_mode) {
+            inline else => |blend_mode| {
+                var face_index: usize = 0;
+                while (primitive_assembly.assemble()) |face_raw| {
+                    var face = face_raw;
 
-        const p0 = linearizePos(face[0].position);
-        const p1 = linearizePos(face[1].position);
-        const p2 = linearizePos(face[2].position);
+                    const p0 = linearizePos(face[0].position);
+                    const p1 = linearizePos(face[1].position);
+                    const p2 = linearizePos(face[2].position);
 
-        const v0 = mapToScreen(p0, target_size.width, target_size.height);
-        const v1 = mapToScreen(p1, target_size.width, target_size.height);
-        const v2 = mapToScreen(p2, target_size.width, target_size.height);
+                    const v0 = mapToScreen(p0, target_size.width, target_size.height);
+                    const v1 = mapToScreen(p1, target_size.width, target_size.height);
+                    const v2 = mapToScreen(p2, target_size.width, target_size.height);
 
-        const barycentric_area = orient2d(f32, v0, v1, v2);
+                    const barycentric_area = orient2d(f32, v0, v1, v2);
 
-        var params = GenericParams{
-            .target_size = target_size,
-            .view = color_target,
-            .depth_buffer = depth_target,
-            .screen_pos = .{ v0, v1, v2 },
-            .barycentric_area = @fabs(barycentric_area),
-            .vertices = &face,
-        };
+                    var params = GenericParams{
+                        .target_size = target_size,
+                        .view = color_target,
+                        .depth_buffer = depth_target,
+                        .screen_pos = .{ v0, v1, v2 },
+                        .barycentric_area = @fabs(barycentric_area),
+                        .vertices = &face,
+                    };
 
-        if (barycentric_area > 0.0) {
-            // flip polygon so the rasterizer can properly rasterize
-            std.mem.swap(Point(f32), &params.screen_pos[1], &params.screen_pos[2]);
-            std.mem.swap(Vertex, &face[1], &face[2]);
-        }
+                    if (barycentric_area > 0.0) {
+                        // flip polygon so the rasterizer can properly rasterize
+                        std.mem.swap(Point(f32), &params.screen_pos[1], &params.screen_pos[2]);
+                        std.mem.swap(Vertex, &face[1], &face[2]);
+                    }
 
-        const fill_mode = if (barycentric_area <= 0.0)
-            front_fill_mode
-        else
-            back_fill_mode;
+                    const fill_mode = if (barycentric_area <= 0.0)
+                        front_fill_mode
+                    else
+                        back_fill_mode;
 
-        switch (cfg.depth_mode) {
-            inline else => |depth_mode| switch (cfg.blend_mode) {
-                inline else => |blend_mode| switch (fill_mode) {
-                    .none => {},
-                    .wireframe => |color| renderWireframeGeneric(color_target.?, v0, v1, v2, WireFill{ .color = color }),
-                    .uniform => |color| renderTriangleGeneric(params, depthWrapper(depth_mode, alphaWrapper(blend_mode, SolidColorFill{ .color = color }))),
-                    .colored => |buffer| renderTriangleGeneric(params, depthWrapper(depth_mode, alphaWrapper(blend_mode, SolidColorFill{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] }))),
-                    .textured => |tex| renderTriangleGeneric(params, depthWrapper(depth_mode, alphaWrapper(blend_mode, TextureFill{ .texture = tex }))),
-                },
+                    switch (fill_mode) {
+                        .none => {},
+                        .wireframe => |color| renderWireframeGeneric(params, alphaWrapper(blend_mode, depthWrapper(depth_mode, SolidColorFill{ .color = color }))),
+                        .uniform => |color| renderTriangleGeneric(params, alphaWrapper(blend_mode, depthWrapper(depth_mode, SolidColorFill{ .color = color }))),
+                        .colored => |buffer| renderTriangleGeneric(params, alphaWrapper(blend_mode, depthWrapper(depth_mode, SolidColorFill{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] }))),
+                        .textured => |tex| renderTriangleGeneric(params, alphaWrapper(blend_mode, depthWrapper(depth_mode, TextureFill{ .texture = tex }))),
+                    }
+                    face_index += 1;
+                }
+                // end render loop
             },
-        }
-
-        face_index += 1;
+        },
     }
 }
 
@@ -543,7 +551,7 @@ fn AlphaWrapper(comptime Filler: type, comptime mode: BlendMode) type {
             return .{ .wrapped = f };
         }
 
-        fn perform(ff: @This(), params: GenericParams, color: *Color, depth_sample: []u8, x: usize, y: usize, w: [3]f32) void {
+        inline fn perform(ff: @This(), params: GenericParams, color: *Color, depth_sample: []u8, x: usize, y: usize, w: [3]f32) bool {
             if (mode == .@"opaque") {
                 return ff.wrapped.perform(params, color, depth_sample, x, y, w);
             }
@@ -556,13 +564,13 @@ fn AlphaWrapper(comptime Filler: type, comptime mode: BlendMode) type {
 
             switch (mode) {
                 .alpha_threshold => if (alpha < 0x80)
-                    return,
+                    return false,
                 .alpha_to_coverage => if (alpha == 0 or alpha < bayer16x16[x % 16][y % 16])
-                    return,
+                    return false,
                 else => @compileError("unsupported mode: " ++ @tagName(mode)),
             }
 
-            ff.wrapped.perform(params, color, depth_sample, x, y, w);
+            return ff.wrapped.perform(params, color, depth_sample, x, y, w);
         }
     };
 }
@@ -595,7 +603,7 @@ fn DepthWrapper(comptime Filler: type, comptime depth_mode: DepthMode) type {
             }
         }
 
-        fn perform(ff: @This(), params: GenericParams, color: *Color, depth_sample: []u8, x: usize, y: usize, w: [3]f32) void {
+        inline fn perform(ff: @This(), params: GenericParams, color: *Color, depth_sample: []u8, x: usize, y: usize, w: [3]f32) bool {
             if (depth_mode == .ignore) {
                 return ff.wrapped.perform(params, color, depth_sample, x, y, w);
             }
@@ -610,34 +618,38 @@ fn DepthWrapper(comptime Filler: type, comptime depth_mode: DepthMode) type {
 
             if (comptime depth_mode.requiresTest()) {
                 if (dst_z < src_z) // LEQUAL
-                    return;
+                    return false;
             }
+
+            if (!ff.wrapped.perform(params, color, depth_sample, x, y, w))
+                return false;
 
             if (comptime depth_mode.requiresWriteBack()) {
                 writeDepth(depth_sample, src_z);
             }
 
-            ff.wrapped.perform(params, color, depth_sample, x, y, w);
+            return true;
         }
     };
 }
 
 const SolidColorFill = struct {
     color: Color,
-    fn perform(ff: @This(), params: GenericParams, color: *Color, depth_sample: []u8, x: usize, y: usize, w: [3]f32) void {
+    inline fn perform(ff: @This(), params: GenericParams, color: *Color, depth_sample: []u8, x: usize, y: usize, w: [3]f32) bool {
         _ = w;
         _ = x;
         _ = y;
         _ = params;
         _ = depth_sample;
         color.* = ff.color;
+        return true;
     }
 };
 
 const TextureFill = struct {
     texture: *Texture,
 
-    fn perform(ff: @This(), params: GenericParams, color: *Color, depth_sample: []u8, x: usize, y: usize, w: [3]f32) void {
+    inline fn perform(ff: @This(), params: GenericParams, color: *Color, depth_sample: []u8, x: usize, y: usize, w: [3]f32) bool {
         _ = x;
         _ = y;
         _ = depth_sample;
@@ -658,17 +670,10 @@ const TextureFill = struct {
         color.* = ff.texture.data[
             ff.texture.width * v_int + u_int
         ];
+        return true;
     }
 };
 
-const WireFill = struct {
-    color: Color,
-    fn perform(wf: @This(), color: *Color, x: usize, y: usize) void {
-        _ = x;
-        _ = y;
-        color.* = wf.color;
-    }
-};
 fn barycentricInterpolation(
     comptime T: type,
     comptime V: type,
@@ -729,13 +734,16 @@ fn mapToScreen(xyz: [3]f32, width: usize, height: usize) Point(f32) {
     };
 }
 
-fn renderWireframeGeneric(view: TextureView, v0: Point(f32), v1: Point(f32), v2: Point(f32), render_access: anytype) void {
-    renderWire(view, v0, v1, render_access);
-    renderWire(view, v1, v2, render_access);
-    renderWire(view, v2, v0, render_access);
+fn renderWireframeGeneric(params: GenericParams, render_access: anytype) void {
+    renderWire(params, 0, 1, render_access);
+    renderWire(params, 1, 2, render_access);
+    renderWire(params, 2, 0, render_access);
 }
 
-fn renderWire(view: TextureView, v0: Point(f32), v1: Point(f32), render_access: anytype) void {
+fn renderWire(params: GenericParams, index0: usize, index1: usize, render_access: anytype) void {
+    const v0 = params.screen_pos[index0];
+    const v1 = params.screen_pos[index1];
+
     const x0 = @floatToInt(i32, v0.x + 0.5);
     const x1 = @floatToInt(i32, v1.x + 0.5);
 
@@ -750,14 +758,46 @@ fn renderWire(view: TextureView, v0: Point(f32), v1: Point(f32), render_access: 
 
     var err = dx + dy;
 
+    const v_dist = blk: {
+        const dxf = @intToFloat(f32, dx);
+        const dyf = @intToFloat(f32, dy);
+        break :blk @sqrt(dxf * dxf + dyf * dyf);
+    };
+
     var x = x0;
     var y = y0;
 
     while (true) {
-        if (x >= 0 and x < view.width and y >= 0 and y < view.height) {
+        if (x >= 0 and x < params.target_size.width and y >= 0 and y < params.target_size.height) {
             const ux = @intCast(usize, x);
             const uy = @intCast(usize, y);
-            render_access.perform(&view.base[uy * view.stride + ux], ux, uy);
+
+            const pos_dx = @intToFloat(f32, x - x0);
+            const pos_dy = @intToFloat(f32, y - y0);
+            const pos_dist = @sqrt(pos_dx * pos_dx + pos_dy * pos_dy);
+
+            const linear = params.barycentric_area * pos_dist / v_dist;
+
+            var w = [3]f32{ 0, 0, 0 };
+            w[index0] = linear;
+            w[index1] = params.barycentric_area - linear;
+
+            var dummy_color: Color = undefined;
+            var dummy_depth: u16 = std.math.maxInt(u16);
+
+            _ = render_access.perform(
+                params,
+                if (params.view) |view|
+                    &view.base[uy * view.stride + ux]
+                else
+                    &dummy_color,
+                if (params.depth_buffer) |db| switch (db.buffer) {
+                    inline else => |buf| std.mem.asBytes(&buf[db.width * uy + ux]),
+                } else std.mem.asBytes(&dummy_depth),
+                ux,
+                uy,
+                w,
+            );
         }
 
         // std.log.info("({} {}) => {} delta=({} {}) dir=({} {})", .{ x, y, err, dx, dy, sx, sy });
@@ -841,7 +881,7 @@ fn renderTriangleGeneric(params: GenericParams, render_access: anytype) void {
 
             // If p is on or inside all edges, render pixel.
             if (w0 <= 0 and w1 <= 0 and w2 <= 0) {
-                render_access.perform(
+                _ = render_access.perform(
                     params,
                     if (color_row) |crow| &crow[x] else &dummy_color,
                     if (depth_row) |drow| drow[depth_size * x .. depth_size * (x + 1)] else std.mem.asBytes(&dummy_depth),

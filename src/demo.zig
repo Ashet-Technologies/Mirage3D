@@ -178,8 +178,8 @@ pub fn main() !void {
                 .index_buffer = index_buffer,
 
                 .primitive_type = .triangles,
-                .front_fill = .{ .textured = surface_texture },
-                .back_fill = .{ .uniform = COLOR_GRAY },
+                .front_fill = .{ .wireframe = COLOR_GRAY }, //  .{ .textured = surface_texture },
+                .back_fill = .{ .wireframe = COLOR_WHITE },
                 .transform = matrix,
             });
 
