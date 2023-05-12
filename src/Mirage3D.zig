@@ -440,19 +440,11 @@ pub fn drawTriangles(context: *Mirage3D, drawInfo: DrawInfo) error{ OutOfMemory,
         const p1 = linearizePos(face[1].position);
         const p2 = linearizePos(face[2].position);
 
-        // std.log.info("({d:.1},{d:.1},{d:.1}), ({d:.1},{d:.1},{d:.1}), ({d:.1},{d:.1},{d:.1})", .{
-        //     p0[0], p0[1], p0[2],
-        //     p1[0], p1[1], p1[2],
-        //     p2[0], p2[1], p2[2],
-        // });
-
         const v0 = mapToScreen(p0, color_target.?.width, color_target.?.height);
         const v1 = mapToScreen(p1, color_target.?.width, color_target.?.height);
         const v2 = mapToScreen(p2, color_target.?.width, color_target.?.height);
 
         const winding_order = orient2d(f32, v0, v1, v2);
-
-        std.log.info("{d}", .{winding_order});
 
         const fill_mode = if (winding_order <= 0.0)
             front_fill_mode

@@ -11,5 +11,9 @@
             .url = "https://github.com/MasterQ32/zig-args/archive/cce1b8987723c155d1fa61c4e6cac717074a2e74.tar.gz",
             .hash = "122087f17682383feb354fecb2505788fdced06639f34e750cf641909fc6dcd76801",
         },
+        .zlm = .{
+            .url = "https://github.com/ziglibs/zlm/archive/21c1ec226d3fd244460270f1dfc9ab0eace01926.tar.gz",
+            .hash = "1220cd4fcddd0c6ab4b7e165ae44acf7658f0a4ca659480e79ba8a9bb7287a7e8f5c",
+        },
     },
 }

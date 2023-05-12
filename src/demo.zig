@@ -1,6 +1,7 @@
 const std = @import("std");
+const zlm = @import("zlm");
 
-const Mirage3D = @import("mirage3d.zig");
+const Mirage3D = @import("Mirage3D");
 const ProxyHead = @import("ProxyHead");
 
 const COLOR_BLACK = Mirage3D.Color{ .index = 0 };
@@ -19,10 +20,55 @@ pub fn main() !void {
     if (comptime (@sizeOf(@TypeOf(framebuffer.base[0])) != @sizeOf(Mirage3D.Color)))
         @compileError("Configuration mismatch!");
 
-    const vertices = [3]Vertex{
-        Vertex{ .position = .{ .x = -0.75, .y = -0.75, .z = 0.0 }, .texcoord = .{ .x = 0.0, .y = 0.0 }, .alpha = 0x00 },
-        Vertex{ .position = .{ .x = 0.75, .y = -0.75, .z = 0.0 }, .texcoord = .{ .x = 1.0, .y = 0.0 }, .alpha = 0x80 },
-        Vertex{ .position = .{ .x = 0.75, .y = 0.75, .z = 0.0 }, .texcoord = .{ .x = 1.0, .y = 1.0 }, .alpha = 0xFF },
+    const L = -1.0;
+    const P = 1.0;
+
+    // Faces are CCW:
+    //    6---------7
+    //   /|        /|
+    //  / |       / |
+    // 4---------5  |
+    // |  |      |  |
+    // |  2 -----|- 3
+    // | /       | /
+    // |/        |/
+    // 0---------1
+
+    const vertices = [8]Vertex{
+        Vertex{ .position = .{ .x = L, .y = L, .z = L }, .texcoord = .{ .x = 0.0, .y = 0.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = L, .y = L, .z = P }, .texcoord = .{ .x = 1.0, .y = 0.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = L, .y = P, .z = L }, .texcoord = .{ .x = 0.0, .y = 1.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = L, .y = P, .z = P }, .texcoord = .{ .x = 1.0, .y = 1.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = P, .y = L, .z = L }, .texcoord = .{ .x = 1.0, .y = 1.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = P, .y = L, .z = P }, .texcoord = .{ .x = 0.0, .y = 1.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = P, .y = P, .z = L }, .texcoord = .{ .x = 1.0, .y = 0.0 }, .alpha = 0xFF },
+        Vertex{ .position = .{ .x = P, .y = P, .z = P }, .texcoord = .{ .x = 0.0, .y = 0.0 }, .alpha = 0xFF },
+    };
+
+    const indices = [6 * 3 * 2]u8{
+        // bot
+        0, 2, 1,
+        2, 3, 1,
+
+        // top
+        4, 5, 7,
+        7, 6, 4,
+
+        // right
+        1, 3, 7,
+        7, 5, 1,
+
+        // left
+        0, 4, 6,
+        6, 2, 0,
+
+        // front
+        0, 1, 5,
+        5, 4, 0,
+
+        // back
+        2, 6, 7,
+        7, 3, 2,
     };
 
     // const offscreen_target_bitmap = try std.heap.c_allocator.alloc(Mirage3D.Color, TARGET_WIDTH * TARGET_HEIGHT);
@@ -45,13 +91,16 @@ pub fn main() !void {
         .blend_mode = .alpha_to_coverage,
         .depth_mode = .normal,
         .vertex_format = vertex_format,
-        .index_format = .none,
+        .index_format = .u8,
         .texture_wrap = .wrap,
     });
     defer mirage.destroyPipelineConfiguration(pipeline_setup);
 
     const vertex_buffer = try mirage.createBuffer(@sizeOf(Vertex) * vertices.len);
     defer mirage.destroyBuffer(vertex_buffer);
+
+    const index_buffer = try mirage.createBuffer(@sizeOf(u8) * indices.len);
+    defer mirage.destroyBuffer(index_buffer);
 
     const target_texture = try mirage.createTexture(TARGET_WIDTH, TARGET_HEIGHT);
     defer mirage.destroyTexture(target_texture);
@@ -78,12 +127,29 @@ pub fn main() !void {
             paused = !paused;
         }
 
-        var matrix: Mirage3D.Matrix4 = .{
-            .{ @sin(0.3 * t), -@cos(t), 0, 0 },
-            .{ @cos(0.3 * t), @sin(t), 0, 0 },
-            .{ 0, 0, 1, 0 },
-            .{ 0, 0, 0, 1 },
-        };
+        var rot_mat = zlm.Mat4.createAngleAxis(zlm.Vec3.unitY, t);
+        var view_mat = zlm.Mat4.createLookAt(
+            zlm.vec3(0, 3, -5),
+            zlm.vec3(0, 0, 0),
+            zlm.Vec3.unitY,
+        );
+        var proj_mat = zlm.Mat4.createPerspective(
+            zlm.toRadians(60.0),
+            @as(f32, TARGET_WIDTH) / TARGET_HEIGHT,
+            0.1,
+            100.0,
+        );
+
+        var world_view_proj_mat = zlm.Mat4.batchMul(&.{ rot_mat, view_mat, proj_mat });
+
+        const matrix: Mirage3D.Matrix4 = world_view_proj_mat.fields;
+
+        // var matrix: Mirage3D.Matrix4 = .{
+        //     .{ @sin(0.3 * t), -@cos(t), 0, 0 },
+        //     .{ @cos(0.3 * t), @sin(t), 0, 0 },
+        //     .{ 0, 0, 1, 0 },
+        //     .{ 0, 0, 0, 1 },
+        // };
 
         // render pass:
         {
@@ -92,6 +158,7 @@ pub fn main() !void {
             try mirage.updateTexture(render_queue, surface_texture, 0, 0, 64, 64, 64, @ptrCast(*const [4096]Mirage3D.Color, &tile_pattern_64x64));
 
             try mirage.updateBuffer(render_queue, vertex_buffer, 0, std.mem.sliceAsBytes(&vertices));
+            try mirage.updateBuffer(render_queue, index_buffer, 0, std.mem.sliceAsBytes(&indices));
 
             try mirage.clearColorTarget(render_queue, color_target, COLOR_BLACK);
 
@@ -104,9 +171,9 @@ pub fn main() !void {
                 .depth_target = .none,
 
                 .vertex_buffer = vertex_buffer,
-                .index_buffer = .none,
+                .index_buffer = index_buffer,
 
-                .primitive_type = .triangles,
+                .primitive_type = .triangle_fan,
                 .front_fill = .{ .textured = surface_texture },
                 .back_fill = .{ .wireframe = COLOR_GRAY },
                 .transform = matrix,
