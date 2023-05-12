@@ -111,6 +111,9 @@ pub fn main() !void {
     const color_target = try mirage.createColorTarget(target_texture, 0, 0, TARGET_WIDTH, TARGET_HEIGHT);
     defer mirage.destroyColorTarget(color_target);
 
+    const depth_target = try mirage.createDepthTarget(TARGET_WIDTH, TARGET_HEIGHT, .@"16 bit");
+    defer mirage.destroyDepthTarget(depth_target);
+
     const render_queue = try mirage.createRenderQueue();
     defer mirage.destroyRenderQueue(render_queue);
 
@@ -161,6 +164,7 @@ pub fn main() !void {
             try mirage.updateBuffer(render_queue, index_buffer, 0, std.mem.sliceAsBytes(&indices));
 
             try mirage.clearColorTarget(render_queue, color_target, COLOR_BLACK);
+            try mirage.clearDepthTarget(render_queue, depth_target, 1.0);
 
             try mirage.drawTriangles(.{
                 .queue = render_queue,
@@ -168,7 +172,7 @@ pub fn main() !void {
                 .configuration = pipeline_setup,
 
                 .color_target = color_target,
-                .depth_target = .none,
+                .depth_target = depth_target,
 
                 .vertex_buffer = vertex_buffer,
                 .index_buffer = index_buffer,
