@@ -316,14 +316,18 @@ pub fn updateTexture(context: *Mirage3D, queue: CommandQueueHandle, texture: Tex
     const q = try context.command_queue_pool.resolve(queue);
     if (!q.active) return error.InactiveQueue;
 
-    _ = data;
-    _ = stride;
-    _ = h;
-    _ = w;
-    _ = y;
-    _ = x;
-    _ = texture;
-    @panic("not implemented yet!");
+    const tex: *Texture = try context.texture_pool.resolve(texture);
+
+    const view = try TextureView.create(tex, x, y, w, h);
+
+    var dst_row = view.base;
+    var src_row = data.ptr;
+
+    for (0..view.height) |_| {
+        @memcpy(dst_row[0..view.width], src_row[0..view.width]);
+        dst_row += view.stride;
+        src_row += stride;
+    }
 }
 
 pub fn fetchTexture(context: *Mirage3D, queue: CommandQueueHandle, texture: TextureHandle, x: u16, y: u16, w: u16, h: u16, stride: usize, data: []Color) error{ InvalidHandle, InactiveQueue, OutOfBounds }!void {
@@ -461,7 +465,7 @@ pub fn drawTriangles(context: *Mirage3D, drawInfo: DrawInfo) error{ OutOfMemory,
                 .wireframe => |color| renderWireframeGeneric(color_target.?, v0, v1, v2, WireFill{ .color = color }),
                 .uniform => |color| renderTriangleGeneric(color_target.?, v0, v1, v2, FlatFill{ .color = color }),
                 .colored => |buffer| renderTriangleGeneric(color_target.?, v0, v1, v2, FlatFill{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] }),
-                .textured => @panic("textured rendering not supported yet"),
+                .textured => |tex| renderTriangleGeneric(color_target.?, v0, v1, v2, TextureFill{ .texture = tex, .barycentric_area = winding_order, .vertices = &face }),
             },
             .alpha_threshold => switch (fill_mode) {
                 .none => {},
@@ -476,7 +480,11 @@ pub fn drawTriangles(context: *Mirage3D, drawInfo: DrawInfo) error{ OutOfMemory,
                     .vertices = &face,
                     .wrapped = .{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] },
                 }),
-                .textured => @panic("textured rendering not supported yet"),
+                .textured => |tex| renderTriangleGeneric(color_target.?, v0, v1, v2, AlphaWrapper(TextureFill, .threshold){
+                    .barycentric_area = winding_order,
+                    .vertices = &face,
+                    .wrapped = TextureFill{ .texture = tex, .barycentric_area = winding_order, .vertices = &face },
+                }),
             },
             .alpha_to_coverage => switch (fill_mode) {
                 .none => {},
@@ -491,7 +499,11 @@ pub fn drawTriangles(context: *Mirage3D, drawInfo: DrawInfo) error{ OutOfMemory,
                     .vertices = &face,
                     .wrapped = .{ .color = std.mem.bytesAsSlice(Color, buffer.data)[face_index] },
                 }),
-                .textured => @panic("textured rendering not supported yet"),
+                .textured => |tex| renderTriangleGeneric(color_target.?, v0, v1, v2, AlphaWrapper(TextureFill, .dither){
+                    .barycentric_area = winding_order,
+                    .vertices = &face,
+                    .wrapped = TextureFill{ .texture = tex, .barycentric_area = winding_order, .vertices = &face },
+                }),
             },
         }
 
@@ -519,40 +531,10 @@ fn AlphaWrapper(comptime Filler: type, comptime mode: AlphaMode) type {
                 .dither => if (alpha == 0 or alpha < bayer16x16[x % 16][y % 16])
                     return,
             }
-            // color.* = .{ .index = alpha };
 
             ff.wrapped.perform(color, x, y, w);
         }
     };
-}
-
-fn barycentricInterpolation(
-    comptime T: type,
-    comptime V: type,
-    total: T,
-    // coordinates
-    w: [3]T,
-
-    // values
-    v: [3]V,
-) V {
-    const H = struct {
-        fn vToFloat(val: V) f32 {
-            return @intToFloat(f32, val);
-        }
-        fn tToFloat(t: T) f32 {
-            return @floatCast(f32, t);
-        }
-        fn floatToV(f: f32) V {
-            return @floatToInt(V, std.math.clamp(f, std.math.minInt(V), std.math.maxInt(V)));
-        }
-    };
-
-    var result: f32 = 0;
-    inline for (w, v) |wx, vx| {
-        result += H.vToFloat(vx) * (H.tToFloat(wx) / H.tToFloat(total));
-    }
-    return H.floatToV(result);
 }
 
 const FlatFill = struct {
@@ -565,6 +547,34 @@ const FlatFill = struct {
     }
 };
 
+const TextureFill = struct {
+    vertices: *const [3]Vertex,
+    texture: *Texture,
+    barycentric_area: f32,
+
+    inline fn perform(ff: @This(), color: *Color, x: usize, y: usize, w: [3]f32) void {
+        _ = x;
+        _ = y;
+
+        const uv0 = ff.vertices[0].uv;
+        const uv1 = ff.vertices[1].uv;
+        const uv2 = ff.vertices[2].uv;
+
+        const u_flt = @mod(barycentricInterpolation(f32, f16, ff.barycentric_area, w, .{ uv0[0], uv1[0], uv2[0] }), 1.0);
+        const v_flt = @mod(barycentricInterpolation(f32, f16, ff.barycentric_area, w, .{ uv0[1], uv1[1], uv2[1] }), 1.0);
+
+        const u_limit = @intToFloat(f32, ff.texture.width -| 1);
+        const v_limit = @intToFloat(f32, ff.texture.height -| 1);
+
+        const u_int = @floatToInt(usize, std.math.clamp(u_limit * u_flt, 0, u_limit));
+        const v_int = @floatToInt(usize, std.math.clamp(v_limit * v_flt, 0, v_limit));
+
+        color.* = ff.texture.data[
+            ff.texture.width * v_int + u_int
+        ];
+    }
+};
+
 const WireFill = struct {
     color: Color,
     inline fn perform(wf: @This(), color: *Color, x: usize, y: usize) void {
@@ -573,6 +583,44 @@ const WireFill = struct {
         color.* = wf.color;
     }
 };
+fn barycentricInterpolation(
+    comptime T: type,
+    comptime V: type,
+    total: T,
+    w: [3]T, // coordinates
+    v: [3]V, // values
+) V {
+    const TConf = struct {
+        fn toFloat(t: T) f32 {
+            return @floatCast(f32, t);
+        }
+    };
+    const VConf = switch (@typeInfo(V)) {
+        .Int => struct {
+            fn toFloat(val: V) f32 {
+                return @intToFloat(f32, val);
+            }
+            fn fromFloat(f: f32) V {
+                return @floatToInt(V, std.math.clamp(f, std.math.minInt(V), std.math.maxInt(V)));
+            }
+        },
+        .Float => struct {
+            fn toFloat(val: V) f32 {
+                return @floatCast(f32, val);
+            }
+            fn fromFloat(f: f32) V {
+                return @floatCast(V, f);
+            }
+        },
+        else => @compileError(@typeName(V) ++ " is not a supported value type!"),
+    };
+
+    var result: f32 = 0;
+    inline for (w, v) |wx, vx| {
+        result += VConf.toFloat(vx) * (TConf.toFloat(wx) / TConf.toFloat(total));
+    }
+    return VConf.fromFloat(result);
+}
 
 fn linearizePos(p: [4]f32) [3]f32 {
     return .{
