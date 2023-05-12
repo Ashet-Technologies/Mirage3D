@@ -88,7 +88,7 @@ pub fn main() !void {
     defer mirage.destroyVertexFormat(vertex_format);
 
     const pipeline_setup = try mirage.createPipelineConfiguration(.{
-        .blend_mode = .alpha_to_coverage,
+        .blend_mode = .@"opaque", // .alpha_to_coverage,
         .depth_mode = .normal,
         .vertex_format = vertex_format,
         .index_format = .u8,
@@ -139,8 +139,8 @@ pub fn main() !void {
         var proj_mat = zlm.Mat4.createPerspective(
             zlm.toRadians(60.0),
             @as(f32, TARGET_WIDTH) / TARGET_HEIGHT,
-            0.1,
-            100.0,
+            1.0,
+            10000.0,
         );
 
         var world_view_proj_mat = zlm.Mat4.batchMul(&.{ rot_mat, view_mat, proj_mat });
@@ -177,9 +177,9 @@ pub fn main() !void {
                 .vertex_buffer = vertex_buffer,
                 .index_buffer = index_buffer,
 
-                .primitive_type = .triangle_fan,
+                .primitive_type = .triangles,
                 .front_fill = .{ .textured = surface_texture },
-                .back_fill = .{ .wireframe = COLOR_GRAY },
+                .back_fill = .{ .uniform = COLOR_GRAY },
                 .transform = matrix,
             });
 
