@@ -11,8 +11,12 @@ const COLOR_WHITE = Mirage3D.Color{ .index = 255 };
 const TARGET_WIDTH = 400;
 const TARGET_HEIGHT = 300;
 
-pub fn main() !void {
-    var head = try ProxyHead.open();
+pub fn main() !u8 {
+    var head = ProxyHead.open() catch |err| {
+        std.log.err("could not connect to Proxy: Head. Please make sure a head is running.", .{});
+        std.log.err("internal error code: {s}", .{@errorName(err)});
+        return 1;
+    };
     defer head.close();
 
     const framebuffer = try head.requestFramebuffer(.index8, TARGET_WIDTH, TARGET_HEIGHT, 200 * std.time.ns_per_ms);
@@ -179,7 +183,7 @@ pub fn main() !void {
 
                 .primitive_type = .triangles,
                 .front_fill = .{ .wireframe = COLOR_GRAY }, //  .{ .textured = surface_texture },
-                .back_fill = .{ .wireframe = COLOR_WHITE },
+                .back_fill = .{ .textured = surface_texture },
                 .transform = matrix,
             });
 
@@ -211,6 +215,8 @@ pub fn main() !void {
     //     });
     //     try f.writeAll(std.mem.sliceAsBytes(offscreen_target_bitmap));
     // }
+
+    return 0;
 }
 
 const Vertex = struct {

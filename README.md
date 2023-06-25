@@ -9,8 +9,12 @@ Whether you're a seasoned developer or just getting started with 3D graphics, Mi
 ## Feature set
 
 - Configurable vertex attributes
-    - Color
-    - Texture Coordinates
-    - Transparency
+  - Color
+  - Texture Coordinates
+  - Transparency
 - Full vertex transformation
 - Flat and textured rendering
+
+## CONCEPT THING
+
+- Use Bayer matrix to interpolate between three or four values by using intervals instead of just binary yes/no use a val 1 in [0.0…0.3], val 2 in [0.3…0.7], val 3 in [0.7…1.0]
