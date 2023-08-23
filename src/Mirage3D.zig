@@ -589,16 +589,16 @@ fn DepthWrapper(comptime Filler: type, comptime depth_mode: DepthMode) type {
 
         fn readDepth(sample: []const u8) f32 {
             return switch (sample.len) {
-                2 => @intToFloat(f32, @ptrCast(*const u16, @alignCast(2, sample.ptr)).*) / std.math.maxInt(u16),
-                4 => @intToFloat(f32, @ptrCast(*const u32, @alignCast(4, sample.ptr)).*) / std.math.maxInt(u32),
+                2 => @as(f32, @floatFromInt(@as(*const u16, @ptrCast(@alignCast(sample.ptr))).*)) / std.math.maxInt(u16),
+                4 => @as(f32, @floatFromInt(@as(*const u32, @ptrCast(@alignCast(sample.ptr))).*)) / std.math.maxInt(u32),
                 else => unreachable,
             };
         }
 
         fn writeDepth(sample: []u8, depth: f32) void {
             switch (sample.len) {
-                2 => @ptrCast(*u16, @alignCast(2, sample.ptr)).* = @floatToInt(u16, std.math.clamp(std.math.maxInt(u16) * depth, 0.0, std.math.maxInt(u16))),
-                4 => @ptrCast(*u32, @alignCast(4, sample.ptr)).* = @floatToInt(u32, std.math.clamp(std.math.maxInt(u32) * depth, 0.0, std.math.maxInt(u32))),
+                2 => @as(*u16, @ptrCast(@alignCast(sample.ptr))).* = @as(u16, @intFromFloat(std.math.clamp(std.math.maxInt(u16) * depth, 0.0, std.math.maxInt(u16)))),
+                4 => @as(*u32, @ptrCast(@alignCast(sample.ptr))).* = @as(u32, @intFromFloat(std.math.clamp(std.math.maxInt(u32) * depth, 0.0, std.math.maxInt(u32)))),
                 else => unreachable,
             }
         }
@@ -661,11 +661,11 @@ const TextureFill = struct {
         const u_flt = @mod(barycentricInterpolation(f32, f16, params.barycentric_area, w, .{ uv0[0], uv1[0], uv2[0] }), 1.0);
         const v_flt = @mod(barycentricInterpolation(f32, f16, params.barycentric_area, w, .{ uv0[1], uv1[1], uv2[1] }), 1.0);
 
-        const u_limit = @intToFloat(f32, ff.texture.width -| 1);
-        const v_limit = @intToFloat(f32, ff.texture.height -| 1);
+        const u_limit = @as(f32, @floatFromInt(ff.texture.width -| 1));
+        const v_limit = @as(f32, @floatFromInt(ff.texture.height -| 1));
 
-        const u_int = @floatToInt(usize, std.math.clamp(u_limit * u_flt, 0, u_limit));
-        const v_int = @floatToInt(usize, std.math.clamp(v_limit * v_flt, 0, v_limit));
+        const u_int = @as(usize, @intFromFloat(std.math.clamp(u_limit * u_flt, 0, u_limit)));
+        const v_int = @as(usize, @intFromFloat(std.math.clamp(v_limit * v_flt, 0, v_limit)));
 
         color.* = ff.texture.data[
             ff.texture.width * v_int + u_int
@@ -683,24 +683,24 @@ fn barycentricInterpolation(
 ) V {
     const TConf = struct {
         fn toFloat(t: T) f32 {
-            return @floatCast(f32, t);
+            return @as(f32, @floatCast(t));
         }
     };
     const VConf = switch (@typeInfo(V)) {
         .Int => struct {
             fn toFloat(val: V) f32 {
-                return @intToFloat(f32, val);
+                return @as(f32, @floatFromInt(val));
             }
             fn fromFloat(f: f32) V {
-                return @floatToInt(V, std.math.clamp(f, std.math.minInt(V), std.math.maxInt(V)));
+                return @as(V, @intFromFloat(std.math.clamp(f, std.math.minInt(V), std.math.maxInt(V))));
             }
         },
         .Float => struct {
             fn toFloat(val: V) f32 {
-                return @floatCast(f32, val);
+                return @as(f32, @floatCast(val));
             }
             fn fromFloat(f: f32) V {
-                return @floatCast(V, f);
+                return @as(V, @floatCast(f));
             }
         },
         else => @compileError(@typeName(V) ++ " is not a supported value type!"),
@@ -728,8 +728,8 @@ fn mapToScreen(xyz: [3]f32, width: usize, height: usize) Point(f32) {
     // z_max = @max(z_max, xyz[2]);
     // std.log.info("z={d:.5} min={d:.5} max={d:.5}", .{ xyz[2], z_min, z_max });
     return Point(f32){
-        .x = @intToFloat(f32, width -| 1) * (0.5 + 0.5 * xyz[0]),
-        .y = @intToFloat(f32, height -| 1) * (0.5 - 0.5 * xyz[1]),
+        .x = @as(f32, @floatFromInt(width -| 1)) * (0.5 + 0.5 * xyz[0]),
+        .y = @as(f32, @floatFromInt(height -| 1)) * (0.5 - 0.5 * xyz[1]),
         .z = xyz[2],
     };
 }
@@ -744,14 +744,14 @@ fn renderWire(params: GenericParams, index0: usize, index1: usize, render_access
     const v0 = params.screen_pos[index0];
     const v1 = params.screen_pos[index1];
 
-    const x0 = @floatToInt(i32, v0.x + 0.5);
-    const x1 = @floatToInt(i32, v1.x + 0.5);
+    const x0 = @as(i32, @intFromFloat(v0.x + 0.5));
+    const x1 = @as(i32, @intFromFloat(v1.x + 0.5));
 
-    const y0 = @floatToInt(i32, v0.y + 0.5);
-    const y1 = @floatToInt(i32, v1.y + 0.5);
+    const y0 = @as(i32, @intFromFloat(v0.y + 0.5));
+    const y1 = @as(i32, @intFromFloat(v1.y + 0.5));
 
-    const dx = @intCast(i32, if (x1 > x0) x1 - x0 else x0 - x1);
-    const dy = -@intCast(i32, if (y1 > y0) y1 - y0 else y0 - y1);
+    const dx = @as(i32, @intCast(if (x1 > x0) x1 - x0 else x0 - x1));
+    const dy = -@as(i32, @intCast(if (y1 > y0) y1 - y0 else y0 - y1));
 
     const sx = if (x0 < x1) @as(i32, 1) else @as(i32, -1);
     const sy = if (y0 < y1) @as(i32, 1) else @as(i32, -1);
@@ -759,8 +759,8 @@ fn renderWire(params: GenericParams, index0: usize, index1: usize, render_access
     var err = dx + dy;
 
     const v_dist = blk: {
-        const dxf = @intToFloat(f32, dx);
-        const dyf = @intToFloat(f32, dy);
+        const dxf = @as(f32, @floatFromInt(dx));
+        const dyf = @as(f32, @floatFromInt(dy));
         break :blk @sqrt(dxf * dxf + dyf * dyf);
     };
 
@@ -769,11 +769,11 @@ fn renderWire(params: GenericParams, index0: usize, index1: usize, render_access
 
     while (true) {
         if (x >= 0 and x < params.target_size.width and y >= 0 and y < params.target_size.height) {
-            const ux = @intCast(usize, x);
-            const uy = @intCast(usize, y);
+            const ux = @as(usize, @intCast(x));
+            const uy = @as(usize, @intCast(y));
 
-            const pos_dx = @intToFloat(f32, x - x0);
-            const pos_dy = @intToFloat(f32, y - y0);
+            const pos_dx = @as(f32, @floatFromInt(x - x0));
+            const pos_dy = @as(f32, @floatFromInt(y - y0));
             const pos_dist = @sqrt(pos_dx * pos_dx + pos_dy * pos_dy);
 
             const linear = params.barycentric_area * pos_dist / v_dist;
@@ -837,8 +837,8 @@ fn renderTriangleGeneric(params: GenericParams, render_access: anytype) void {
     // Compute triangle bounding box
     const minX = @floor(@max(@as(f32, 0), @min(@min(params.screen_pos[0].x, params.screen_pos[1].x), params.screen_pos[2].x)));
     const minY = @floor(@max(@as(f32, 0), @min(@min(params.screen_pos[0].y, params.screen_pos[1].y), params.screen_pos[2].y)));
-    const maxX = @ceil(@min(@intToFloat(f32, params.target_size.width - 1), @max(@max(params.screen_pos[0].x, params.screen_pos[1].x), params.screen_pos[2].x)));
-    const maxY = @ceil(@min(@intToFloat(f32, params.target_size.height - 1), @max(@max(params.screen_pos[0].y, params.screen_pos[1].y), params.screen_pos[2].y)));
+    const maxX = @ceil(@min(@as(f32, @floatFromInt(params.target_size.width - 1)), @max(@max(params.screen_pos[0].x, params.screen_pos[1].x), params.screen_pos[2].x)));
+    const maxY = @ceil(@min(@as(f32, @floatFromInt(params.target_size.height - 1)), @max(@max(params.screen_pos[0].y, params.screen_pos[1].y), params.screen_pos[2].y)));
 
     // std.log.info("bounding box: {d:.2} => {d:.2}; {d:.2} => {d:.2}", .{
     //     minX, maxX,
@@ -848,11 +848,11 @@ fn renderTriangleGeneric(params: GenericParams, render_access: anytype) void {
     if (minX > maxX) return;
     if (minY > maxY) return;
 
-    var x0: usize = @floatToInt(usize, minX);
-    var x1: usize = @floatToInt(usize, maxX);
+    var x0: usize = @as(usize, @intFromFloat(minX));
+    var x1: usize = @as(usize, @intFromFloat(maxX));
 
-    var y0: usize = @floatToInt(usize, minY);
-    var y1: usize = @floatToInt(usize, maxY);
+    var y0: usize = @as(usize, @intFromFloat(minY));
+    var y1: usize = @as(usize, @intFromFloat(maxY));
 
     const depth_size = if (params.depth_buffer) |db| db.buffer.byteSize() else 0;
 
@@ -862,8 +862,8 @@ fn renderTriangleGeneric(params: GenericParams, render_access: anytype) void {
     for (y0..y1 + 1) |y| {
         for (x0..x1 + 1) |x| {
             const p = Point(f32){
-                .x = @intToFloat(f32, x),
-                .y = @intToFloat(f32, y),
+                .x = @as(f32, @floatFromInt(x)),
+                .y = @as(f32, @floatFromInt(y)),
                 .z = undefined,
             };
 
@@ -959,8 +959,8 @@ const DepthTarget = struct {
 
         fn byteAccess(db: DepthBuffer) [*]align(16) u8 {
             return switch (db) {
-                .@"16 bit" => |buf| @ptrCast([*]align(16) u8, buf.ptr),
-                .@"32 bit" => |buf| @ptrCast([*]align(16) u8, buf.ptr),
+                .@"16 bit" => |buf| @as([*]align(16) u8, @ptrCast(buf.ptr)),
+                .@"32 bit" => |buf| @as([*]align(16) u8, @ptrCast(buf.ptr)),
             };
         }
 
@@ -1076,7 +1076,7 @@ fn ObjectPool(comptime Handle: type, comptime Object: type) type {
             }
 
             pub fn hash(_: @This(), handle: Handle) u32 {
-                return @truncate(u32, @enumToInt(handle));
+                return @as(u32, @truncate(@intFromEnum(handle)));
             }
         };
 
@@ -1114,12 +1114,12 @@ fn ObjectPool(comptime Handle: type, comptime Object: type) type {
         const HandlePtrPair = struct { handle: Handle, object: *Object };
         pub fn create(pool: *Pool) error{ OutOfMemory, ResourceLimit }!HandlePtrPair {
             var handle_int = pool.next_handle;
-            while (pool.handle_map.get(@intToEnum(Handle, handle_int)) != null) {
+            while (pool.handle_map.get(@as(Handle, @enumFromInt(handle_int))) != null) {
                 handle_int = computeNextHandleInt(handle_int);
                 if (handle_int == pool.next_handle)
                     return error.ResourceLimit; // we have reached a full circle, which is bad.
             }
-            const handle = @intToEnum(Handle, handle_int);
+            const handle = @as(Handle, @enumFromInt(handle_int));
 
             const obj = try pool.memory_pool.create();
             errdefer pool.memory_pool.destroy(obj);
@@ -1165,7 +1165,7 @@ fn lowestFreeEnumValue(comptime Handle: type) @typeInfo(Handle).Enum.tag_type {
             break :blk low;
 
         inline for (enum_info.fields) |key| {
-            low = std.math.max(low, key.value);
+            low = @max(low, key.value);
         }
 
         break :blk low + 1;
@@ -1207,7 +1207,7 @@ fn mapUniFloatToIntRange(f: f32, comptime I: type) I {
 
     const clamped = std.math.clamp((int_hi - int_lo) * f - int_lo, int_lo, int_hi);
 
-    return @floatToInt(I, clamped);
+    return @as(I, @intFromFloat(clamped));
 }
 
 test mapUniFloatToIntRange {
@@ -1223,7 +1223,7 @@ fn mixIntRanged(comptime I: type, a: I, b: I) I {
 
     const TwoI = @Type(.{ .Int = .{ .bits = 2 * bitSize, .signedness = .unsigned } });
 
-    return @truncate(I, (@as(TwoI, a) * @as(TwoI, b)) >> bitSize);
+    return @as(I, @truncate((@as(TwoI, a) * @as(TwoI, b)) >> bitSize));
 }
 
 test mixIntRanged {
@@ -1271,11 +1271,11 @@ const VertexFetcher = struct {
             0xFF;
 
         const uv = if (fmt.feature_mask.texcoord)
-            @bitCast([2]f16, vertex[fmt.texture_coord_offset..][0 .. 2 * @sizeOf(f16)].*)
+            @as([2]f16, @bitCast(vertex[fmt.texture_coord_offset..][0 .. 2 * @sizeOf(f16)].*))
         else
             [2]f16{ 0, 0 };
 
-        const pos = @bitCast([3]f32, vertex[fmt.position_offset..][0 .. 3 * @sizeOf(f32)].*);
+        const pos = @as([3]f32, @bitCast(vertex[fmt.position_offset..][0 .. 3 * @sizeOf(f32)].*));
 
         return Vertex{
             .position = pos ++ [1]f32{1},
@@ -1445,7 +1445,7 @@ const PrimitiveAssembly = struct {
 };
 
 /// Contains a 16x16 bayer dithering matrix, having unique values from 0 to 255.
-const bayer16x16: [16][16]u8 = @bitCast([16][16]u8, [256]u8{
+const bayer16x16: [16][16]u8 = @as([16][16]u8, @bitCast([256]u8{
     0,   128, 32,  160, 8,   136, 40,  168, 2,   130, 34,  162, 10,  138, 42,  170,
     192, 64,  224, 96,  200, 72,  232, 104, 194, 66,  226, 98,  202, 74,  234, 106,
     48,  176, 16,  144, 56,  184, 24,  152, 50,  178, 18,  146, 58,  186, 26,  154,
@@ -1462,7 +1462,7 @@ const bayer16x16: [16][16]u8 = @bitCast([16][16]u8, [256]u8{
     207, 79,  239, 111, 199, 71,  231, 103, 205, 77,  237, 109, 197, 69,  229, 101,
     63,  191, 31,  159, 55,  183, 23,  151, 61,  189, 29,  157, 53,  181, 21,  149,
     255, 127, 223, 95,  247, 119, 215, 87,  253, 125, 221, 93,  245, 117, 213, 85,
-});
+}));
 
 comptime {
     // ref all api calls to ensure they are always analyzed:

@@ -162,7 +162,7 @@ pub fn main() !u8 {
         {
             try mirage.begin(render_queue);
 
-            try mirage.updateTexture(render_queue, surface_texture, 0, 0, 64, 64, 64, @ptrCast(*const [4096]Mirage3D.Color, &tile_pattern_64x64));
+            try mirage.updateTexture(render_queue, surface_texture, 0, 0, 64, 64, 64, @as(*const [4096]Mirage3D.Color, @ptrCast(&tile_pattern_64x64)));
 
             try mirage.updateBuffer(render_queue, vertex_buffer, 0, std.mem.sliceAsBytes(&vertices));
             try mirage.updateBuffer(render_queue, index_buffer, 0, std.mem.sliceAsBytes(&indices));
@@ -192,10 +192,10 @@ pub fn main() !u8 {
                 target_texture,
                 0,
                 0,
-                @intCast(u16, framebuffer.width),
-                @intCast(u16, framebuffer.height),
+                @as(u16, @intCast(framebuffer.width)),
+                @as(u16, @intCast(framebuffer.height)),
                 framebuffer.stride,
-                @ptrCast([]Mirage3D.Color, framebuffer.base[0 .. framebuffer.stride * framebuffer.height]),
+                @as([]Mirage3D.Color, @ptrCast(framebuffer.base[0 .. framebuffer.stride * framebuffer.height])),
             );
 
             try mirage.end(render_queue);

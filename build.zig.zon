@@ -4,16 +4,16 @@
 
     .dependencies = .{
         .proxy_head = .{
-            .url = "https://github.com/MasterQ32/proxy-head/archive/9250354c2667a0b080380b2df051c3b7c9a7559a.tar.gz",
-            .hash = "1220accd76a0d8371817082d0e4c1ec9f86b59d13642ada81aa3693511fd63c676f8",
+            .url = "https://github.com/MasterQ32/proxy-head/archive/23b9e59d853788dabb7b1bbaf64b21b9f3cf134d.tar.gz",
+            .hash = "122006f50b985a5522fce1cc980cf7ea56776304d1351c0f8dec9d7c8481a0860329",
         },
         .args = .{
-            .url = "https://github.com/MasterQ32/zig-args/archive/cce1b8987723c155d1fa61c4e6cac717074a2e74.tar.gz",
-            .hash = "122087f17682383feb354fecb2505788fdced06639f34e750cf641909fc6dcd76801",
+            .url = "https://github.com/MasterQ32/zig-args/archive/bb2eced8ddf28114b3a1ff761c2d80b90b1a61e2.tar.gz",
+            .hash = "12208556082c280af264ca2a174fd04fc7a35f865bfe59e2c61f4a977bf7a65063e4",
         },
         .zlm = .{
-            .url = "https://github.com/ziglibs/zlm/archive/21c1ec226d3fd244460270f1dfc9ab0eace01926.tar.gz",
-            .hash = "1220cd4fcddd0c6ab4b7e165ae44acf7658f0a4ca659480e79ba8a9bb7287a7e8f5c",
+            .url = "https://github.com/ziglibs/zlm/archive/dce0e8ead4b14b2105076fad9cbc43bbdf439c21.tar.gz",
+            .hash = "1220e50f6c7a0d094dbe6d21798c63dc564351d1e0b5d130c42c3a9ef0660b1af42d",
         },
     },
 }
